@@ -5,9 +5,47 @@
 savane2github.py - Savane to GitHub Migration Tool
 Copyright 2021 Marius Greuel
 Licensed under the GNU GPL v3.0
+
+Requires:
+    Python3: sudo apt install python3 python3-pip
+    PyGithub, Beautiful Soup: pip install --upgrade PyGithub beautifulsoup4
+
+The purpose of this tool is to migrate a Savane project hosted on Savannah to GitHub.
+This tool is capable of migrating bugs, tasks, and patches and creating the respective issues on GitHub.
+
+Using the tool requires multiple steps, which gives you the opportunity to inspect the result after each step,
+before you export the issues to GitHub.
+
+The basic procedure is as follows:
+
+- List items of a Savane project
+  - In this step, a list of bugs, tasks, or patches will be created using the 'Browse' feature of the projects website.
+  - The result will be written to a JSON list file, containing the IDs and a description.
+- Download HTML pages from a Savane project
+  - In this step, all HTML tracker pages will be downloaded.
+  - The HTML pages to be downloaded are specified by the JSON list file.
+- Import HTML pages
+  - In this step, the downloaded HTML pages will be parsed.
+  - The HTML pages to be parsed are specified by the JSON list file. 
+  - The result will be written to a JSON tracker file, containing a combined list of bugs, tasks, or patches.
+- Export items to GitHub
+  - In this final step, the JSON tracker file will be exported to GitHub.
+  - For each item in the JSON tracker file, a GitHub issue will be created. One or more comments may be created for every issue.
+
+Note: This script assumes that you successfully authenticated yourself as a Savannah member using the --username and --password option.
+
+Example:
+```
+./savane2github.py --project avrdude --username <myuser> --password <mypw> --list-bugs
+./savane2github.py --project avrdude --username <myuser> --password <mypw> --download-bugs
+./savane2github.py --project avrdude --import-bugs
+./savane2github.py --project avrdude --dump-bugs
+./savane2github.py --project avrdude --access-token <mytoken> --export-bugs
+```
 """
 
 import argparse
+import calendar
 import json
 from json import JSONEncoder
 from json import JSONDecoder
@@ -15,8 +53,10 @@ import logging
 import os
 import requests
 import sys
+import time
 import bs4
 from github import Github
+from github import GithubException
 
 class ItemType:
     def __init__(self, path, singular, plural):
@@ -26,6 +66,7 @@ class ItemType:
 
 class TrackerComment:
     def __init__(self):
+        self.migration_status = 'pending'
         self.author = None
         self.time = None
         self.text = None
@@ -47,8 +88,10 @@ class TrackerAttachment:
 
 class Tracker:
     def __init__(self):
-        self.type = ''
-        self.item_id = 0
+        self.migration_id = None
+        self.migration_status = 'pending'
+        self.type = None
+        self.item_id = None
         self.summary = None
         self.originator_name = None
         self.originator_email = None
@@ -156,12 +199,12 @@ def import_tracker(instance, project, tracker_type):
     def parse_tracker(instance, tracker_type, text):
         def get_input_field(form, name):
             input = form.find('input', attrs={'name': name})
-            return input['value'] if input else None
+            return input['value'].strip() if input else None
 
         def get_select_field(form, name):
             select = form.find('select', attrs={'name': name})
             selected = select.find('option', attrs={'selected': 'selected'}) if select else None
-            return str(selected.string) if selected else None
+            return str(selected.string).strip() if selected else None
 
         def html_to_markup(instance, contents):
             def has_left_whitespace(item):
@@ -323,55 +366,92 @@ def export_tracker(project, repo_path, access_token, dry_run, tracker_type):
         labels = ['bug', 'question', 'wontfix', 'invalid', 'duplicate']
         repo_labels = dict(zip(labels, map(repo.get_label, labels)))
 
+    issue_creation_delay = 60
+    comment_creation_delay = 1
+    issue_edit_delay = 1
+    rate_limit_delay = 5
+    secondary_rate_limit_delay = 600
+
     for tracker in trackers:
+        if tracker.migration_status == 'complete':
+            continue
+
         issue_title = f'[{tracker.type} #{tracker.item_id}] {tracker.summary}'
+        logging.info(f"Creating issue '{issue_title}'...")
 
-        issue_body = ''
-        if tracker.originator_name: issue_body += f'{tracker.originator_name} <{tracker.originator_email}>\n'
-        if tracker.description: issue_body += f'{tracker.description.time}\n'
-        if tracker.programmer_hardware: issue_body += f'Programmer hardware: {tracker.programmer_hardware}\n'
-        if tracker.device_type: issue_body += f'Device type: {tracker.device_type}\n'
-        issue_body += f'\n{tracker.description.text}\n'
+        while True:
+            try:
+                core_rate_limit = g.get_rate_limit().core
+                logging.debug(f'Remaining rate_limit.core: {core_rate_limit.remaining}')
+                if core_rate_limit.remaining < 100:
+                    reset_timestamp = calendar.timegm(core_rate_limit.reset.timetuple())
+                    sleep_time = reset_timestamp - calendar.timegm(time.gmtime()) + rate_limit_delay
+                    logging.warning(f'API rate limit reached, waiting {sleep_time}s ...')
+                    time.sleep(sleep_time)
+                    continue
 
-        if len(tracker.attachments) > 0:
-            issue_body += '\n'
-            for attachment in tracker.attachments:
-                issue_body += str(attachment) + '\n'
+                issue_body = ''
+                if tracker.originator_name: issue_body += f'{tracker.originator_name} <{tracker.originator_email}>\n'
+                if tracker.description: issue_body += f'{tracker.description.time}\n'
+                if tracker.programmer_hardware: issue_body += f'Programmer hardware: {tracker.programmer_hardware}\n'
+                if tracker.device_type: issue_body += f'Device type: {tracker.device_type}\n'
+                issue_body += f'\n{tracker.description.text}\n'
 
-        issue_body += f'\nThis issue was migrated from {tracker.url}'
+                if len(tracker.attachments) > 0:
+                    issue_body += '\n'
+                    for attachment in tracker.attachments:
+                        issue_body += str(attachment) + '\n'
 
-        print('======')
-        print(issue_title)
-        print('======')
-        print(issue_body)
+                issue_body += f'\nThis issue was migrated from {tracker.url}'
 
-        issue_labels = []
-        if tracker.resolution_id == 'Need Info':
-            issue_labels.append('question')
-        if tracker.resolution_id == 'Confirmed' or tracker.resolution_id == 'Fixed' or tracker.resolution_id == 'In Progress':
-            issue_labels.append('bug')
-        if tracker.resolution_id == 'Wont Fix':
-            issue_labels.append('wontfix')
-        if tracker.resolution_id == 'Works For Me' or tracker.resolution_id == 'Invalid':
-            issue_labels.append('invalid')
-        if tracker.resolution_id == 'Duplicate':
-            issue_labels.append('duplicate')
+                issue_labels = []
+                if tracker.resolution_id == 'Need Info':
+                    issue_labels.append('question')
+                if tracker.resolution_id == 'Confirmed' or tracker.resolution_id == 'Fixed' or tracker.resolution_id == 'In Progress':
+                    issue_labels.append('bug')
+                if tracker.resolution_id == 'Wont Fix':
+                    issue_labels.append('wontfix')
+                if tracker.resolution_id == 'Works For Me' or tracker.resolution_id == 'Invalid':
+                    issue_labels.append('invalid')
+                if tracker.resolution_id == 'Duplicate':
+                    issue_labels.append('duplicate')
 
-        print('!Labels', issue_labels)
+                if not dry_run:
+                    if hasattr(tracker, 'migration_id') and tracker.migration_id:
+                        issue = repo.get_issue(tracker.migration_id)
+                    else:
+                        issue = repo.create_issue(title=issue_title, body=issue_body, labels=[repo_labels[label] for label in issue_labels])
+                        tracker.migration_id = issue.number
+                        time.sleep(issue_creation_delay)
 
-        if not dry_run:
-            issue = repo.create_issue(title=issue_title, body=issue_body, labels=[repo_labels[label] for label in issue_labels])
+                for comment in tracker.comments:
+                    logging.debug(f"Creating comment...")
+                    if not dry_run:
+                        if comment.migration_status == 'pending':
+                            issue.create_comment(str(comment))
+                            comment.migration_status = 'complete'
+                            time.sleep(comment_creation_delay)
 
-        for comment in tracker.comments:
-            print('------')
-            print(comment)
-            if not dry_run:
-                issue.create_comment(str(comment))
+                if tracker.status_id == 'Closed':
+                    logging.debug(f"Closing issue...")
+                    if not dry_run:
+                        if (issue.state == 'open'):
+                            issue.edit(state='closed')
+                            time.sleep(issue_edit_delay)
 
-        if tracker.status_id == 'Closed':
-            print('!Closed')
-            if not dry_run:
-                issue.edit(state='closed')
+                if not dry_run:
+                    tracker.migration_status = 'complete'
+
+            except GithubException as err:
+                if err.status == 403 and 'secondary rate limit' in err.data['message']:
+                    logging.warning(f'secondary rate limit exceeded, waiting {secondary_rate_limit_delay}s...')
+                    time.sleep(secondary_rate_limit_delay)
+                    continue
+                raise
+            finally:
+                with open(path, 'w', encoding='utf-8') as file:
+                    json.dump(trackers, file, indent=4, cls=IssueEncoder)
+            break;
 
 def main():
     def parse_commandline():
@@ -414,9 +494,9 @@ def main():
         valid |= args.dump_bugs and args.project != None
         valid |= args.dump_tasks and args.project != None
         valid |= args.dump_patches and args.project != None
-        valid |= args.export_bugs and args.project != None and args.repo_path != None and args.access_token != None
-        valid |= args.export_tasks and args.project != None and args.repo_path != None and args.access_token != None
-        valid |= args.export_patches and args.project != None and args.repo_path != None and args.access_token != None
+        valid |= args.export_bugs and args.project != None and (args.dry_run or args.repo_path != None and args.access_token != None)
+        valid |= args.export_tasks and args.project != None and (args.dry_run or args.repo_path != None and args.access_token != None)
+        valid |= args.export_patches and args.project != None and (args.dry_run or args.repo_path != None and args.access_token != None)
 
         if not valid:
             parser.print_help()
