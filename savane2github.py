@@ -381,14 +381,15 @@ def export_tracker(project, repo_path, access_token, dry_run, tracker_type):
 
         while True:
             try:
-                core_rate_limit = g.get_rate_limit().core
-                logging.debug(f'Remaining rate_limit.core: {core_rate_limit.remaining}')
-                if core_rate_limit.remaining < 100:
-                    reset_timestamp = calendar.timegm(core_rate_limit.reset.timetuple())
-                    sleep_time = reset_timestamp - calendar.timegm(time.gmtime()) + rate_limit_delay
-                    logging.warning(f'API rate limit reached, waiting {sleep_time}s ...')
-                    time.sleep(sleep_time)
-                    continue
+                if not dry_run:
+                    core_rate_limit = g.get_rate_limit().core
+                    logging.debug(f'Remaining rate_limit.core: {core_rate_limit.remaining}')
+                    if core_rate_limit.remaining < 100:
+                        reset_timestamp = calendar.timegm(core_rate_limit.reset.timetuple())
+                        sleep_time = reset_timestamp - calendar.timegm(time.gmtime()) + rate_limit_delay
+                        logging.warning(f'API rate limit reached, waiting {sleep_time}s ...')
+                        time.sleep(sleep_time)
+                        continue
 
                 issue_body = ''
                 if tracker.originator_name: issue_body += f'{tracker.originator_name} <{tracker.originator_email}>\n'
