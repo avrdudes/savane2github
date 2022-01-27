@@ -47,6 +47,29 @@ Note: This script assumes that you successfully authenticated yourself as a Sava
 ./savane2github.py --project avrdude --access-token <mytoken> --export-bugs
 ```
 
+## SourceForge.net migration
+
+With the help of the companion script `import_sf.py`, it is also
+possible to migrate issue trackers from SourceForge.net projects.
+
+In order to do this, go to the SourceForge project Admin tab, and then
+pick "Export". Select all the trackers you'd like to export.
+Attachments are not migrated by the scripts, so you can leave them out
+unless you'd like to have them in the exported archive anyway.
+
+Unpack the archive locally then. The trackers are recorded in JSON
+files like `bugs.json` etc.
+
+Run `import_sf.py` on each of these files, redirect the output into
+a project subdirectory into a new JSON file that with the name
+`trackers_`_name-of-tracker_`s.json`.
+
+This file is the equivalent of the third step above. You can thus
+use `savane2github.py` on it with the `--export-`_name-of-tracker_
+and `--dump-`_name-of-tracker_ options. In addition to bugs and
+patches, feature requests can also be handled at that point.
+
+
 ## Issues
 
 - This script was written to migrate the 'avrdude' Savannah project. It should be possible to adapt this script for other projects.

@@ -363,7 +363,7 @@ def export_tracker(project, repo_path, access_token, dry_run, tracker_type):
         logging.info(f"Creating GitHub instance...")
         g = Github(access_token)
         repo = g.get_repo(repo_path)
-        labels = ['bug', 'question', 'wontfix', 'invalid', 'duplicate']
+        labels = ['bug', 'question', 'wontfix', 'invalid', 'duplicate', 'enhancement']
         repo_labels = dict(zip(labels, map(repo.get_label, labels)))
 
     issue_creation_delay = 60
@@ -409,7 +409,10 @@ def export_tracker(project, repo_path, access_token, dry_run, tracker_type):
                 if tracker.resolution_id == 'Need Info':
                     issue_labels.append('question')
                 if tracker.resolution_id == 'Confirmed' or tracker.resolution_id == 'Fixed' or tracker.resolution_id == 'In Progress':
-                    issue_labels.append('bug')
+                    if tracker.type == 'bug':
+                        issue_labels.append('bug')
+                    else:
+                        issue_labels.append('enhancement')
                 if tracker.resolution_id == 'Wont Fix':
                     issue_labels.append('wontfix')
                 if tracker.resolution_id == 'Works For Me' or tracker.resolution_id == 'Invalid':
@@ -475,9 +478,11 @@ def main():
         parser.add_argument('--dump-bugs', action='store_true', help='Dump bugs JSON tracker file')
         parser.add_argument('--dump-tasks', action='store_true', help='Dump tasks JSON tracker file')
         parser.add_argument('--dump-patches', action='store_true', help='Dump patches JSON tracker file')
+        parser.add_argument('--dump-feature-requests', action='store_true', help='Dump feature requests JSON tracker file')
         parser.add_argument('--export-bugs', action='store_true', help='Export bugs to GitHub')
         parser.add_argument('--export-tasks', action='store_true', help='Export tasks to GitHub')
         parser.add_argument('--export-patches', action='store_true', help='Export patches to GitHub')
+        parser.add_argument('--export-feature-requests', action='store_true', help='Export feature requests to GitHub')
         parser.add_argument('--dry-run', action='store_true', help='Do not make actual changes to GitHub')
         parser.add_argument('-v', '--verbose', action='store_const', dest='loglevel', default=logging.INFO, const=logging.DEBUG, help='enable verbose command-line output')
         args = parser.parse_args()
@@ -495,9 +500,11 @@ def main():
         valid |= args.dump_bugs and args.project != None
         valid |= args.dump_tasks and args.project != None
         valid |= args.dump_patches and args.project != None
+        valid |= args.dump_feature_requests and args.project != None
         valid |= args.export_bugs and args.project != None and (args.dry_run or args.repo_path != None and args.access_token != None)
         valid |= args.export_tasks and args.project != None and (args.dry_run or args.repo_path != None and args.access_token != None)
         valid |= args.export_patches and args.project != None and (args.dry_run or args.repo_path != None and args.access_token != None)
+        valid |= args.export_feature_requests and args.project != None and (args.dry_run or args.repo_path != None and args.access_token != None)
 
         if not valid:
             parser.print_help()
@@ -525,7 +532,8 @@ def main():
             what = {
                 'bug': ItemType('bugs', 'bug', 'bugs'),
                 'task': ItemType('task', 'task', 'tasks'),
-                'patch': ItemType('patch', 'patch', 'patches')
+                'patch': ItemType('patch', 'patch', 'patches'),
+                'feature-request': ItemType('feature-request', 'feature-request', 'feature-requests')
             }
 
             authenticate_session(session, args.instance, args.project, args.username, args.password)
@@ -554,12 +562,16 @@ def main():
                 dump_tracker(args.project, what['task'])
             if args.dump_patches:
                 dump_tracker(args.project, what['patch'])
+            if args.dump_feature_requests:
+                dump_tracker(args.project, what['feature-request'])
             if args.export_bugs:
                 export_tracker(args.project, args.repo_path, args.access_token, args.dry_run, what['bug'])
             if args.export_tasks:
                 export_tracker(args.project, args.repo_path, args.access_token, args.dry_run, what['task'])
             if args.export_patches:
                 export_tracker(args.project, args.repo_path, args.access_token, args.dry_run, what['patch'])
+            if args.export_feature_requests:
+                export_tracker(args.project, args.repo_path, args.access_token, args.dry_run, what['feature-request'])
 
         exit(0)
     except SystemExit:
